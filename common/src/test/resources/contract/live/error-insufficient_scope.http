@@ -1,0 +1,11 @@
+HTTP/1.1 403 Forbidden
+X-Powered-By: PHP/8.3.11
+Content-Type: application/json
+X-RateLimit-Limit: 60
+X-RateLimit-Remaining: 51
+X-Frame-Options: SAMEORIGIN
+X-Content-Type-Options: nosniff
+Referrer-Policy: strict-origin-when-cross-origin
+Vary: Origin
+
+{"success":false,"error":"This API token is not allowed to share modlists. Re-issue it in your profile.","error_code":"insufficient_scope"}

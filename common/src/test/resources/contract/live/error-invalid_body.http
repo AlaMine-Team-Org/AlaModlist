@@ -1,0 +1,11 @@
+HTTP/1.1 400 Bad Request
+X-Powered-By: PHP/8.3.11
+Content-Type: application/json
+X-RateLimit-Limit: 10
+X-RateLimit-Remaining: 5
+X-Frame-Options: SAMEORIGIN
+X-Content-Type-Options: nosniff
+Referrer-Policy: strict-origin-when-cross-origin
+Vary: Origin
+
+{"success":false,"error":"The body is not valid JSON.","error_code":"invalid_body"}

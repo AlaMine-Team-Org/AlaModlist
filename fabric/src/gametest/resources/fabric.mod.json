@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "id": "alamodlist-gametest",
+  "version": "0.0.0",
+  "name": "Ala Modlist game tests",
+  "description": "Dev-only game tests. Never shipped: the release jar packs only the main source set.",
+  "environment": "*",
+  "entrypoints": {
+    "fabric-client-gametest": [
+      "day.alacraft.alamodlist.fabric.gametest.visual.AlaModlistClientGameTest"
+    ]
+  },
+  "depends": {
+    "alamodlist": "*"
+  }
+}

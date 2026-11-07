@@ -1,0 +1,423 @@
+# Publishes one release. A pushed tag vX.Y.Z is built, checked and then
+# published: one GitHub Release holding a jar per Minecraft line and loader,
+# and one Modrinth version and one CurseForge file for each of those jars.
+#
+# The lines are the files of gradle/mc/. This file names them in the publish
+# steps below ("Publish Fabric 26.2 to CurseForge"), because the re-run guard
+# and the post-release check read those step names. A release whose steps and
+# lines disagree is refused before it is tagged, by a check that lives with the
+# release tooling and not in this repository, so a line added to gradle/mc/
+# cannot be forgotten here.
+#
+# Two jobs, on purpose:
+#   build    compiles and tests with read-only permissions and no secret at all.
+#            Gradle runs third-party code - plugins, the loaders, dependencies -
+#            and none of it ever shares a job with a platform token.
+#   publish  runs only this repository's scripts and first-party actions, in
+#            the protected 'release' environment: that is where the platform
+#            tokens live, and a reviewer approves each deployment.
+#
+# Publication order follows how safely each target can be retried:
+#   GitHub Release -> Modrinth -> CurseForge.
+# The release is checked asset by asset and never overwritten, and it is the
+# canonical store of the bytes every platform receives. Modrinth answers "does
+# this version exist" exactly. CurseForge cannot be asked reliably, so it goes
+# last: no step after it can fail and send a re-run back into it.
+#
+# Recovery:
+#   - the tag is on the remote but no run started (the push event was lost):
+#       gh workflow run release.yml --ref vX.Y.Z -f dry_run=false
+#   - an upload failed, or a platform was configured after the release:
+#       re-run the publish job of the tag's run. Finished targets are
+#       recognised and skipped; the jars already attached to the release are
+#       the ones uploaded.
+#   - a rehearsal: Run workflow with dry_run left on builds and checks
+#     everything and publishes nothing.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to build (vX.Y.Z). Leave empty when the ref selected above is the tag.'
+        required: false
+        type: string
+        default: ''
+      dry_run:
+        description: 'Build and check everything, publish nothing.'
+        required: false
+        type: boolean
+        default: true
+
+permissions: {}
+
+# Runs for one tag never overlap: a delayed tag event arriving during a manual
+# run waits for it, and then finds its targets already published.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build and verify
+    # Pinned, not ubuntu-latest: that label moved to Ubuntu 26.04 on 2026-10-19
+    # (actions/runner-images#14748), and a release that breaks half-way leaves
+    # some platforms published and others not. This job needs jq, unzip, curl
+    # and python3 from the image (the JDK comes from setup-java). Move to
+    # ubuntu-26.04 after a dry run of this workflow has passed on it.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.rel.outputs.tag }}
+      publish: ${{ steps.rel.outputs.publish }}
+    steps:
+      # Before checkout: it needs no files, so a wrong ref costs seconds. The
+      # value reaches the shell through env - text spliced into a script by an
+      # expression would run as code - and an anchored regex pins it to
+      # vMAJOR.MINOR.PATCH before anything else reads it.
+      - name: Resolve the release tag
+        id: rel
+        env:
+          DISPATCH_TAG: ${{ github.event.inputs.tag }}
+          DISPATCH_DRY_RUN: ${{ github.event.inputs.dry_run }}
+        run: |
+          TAG="${DISPATCH_TAG:-$GITHUB_REF_NAME}"
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::'$TAG' is not a release tag (vX.Y.Z)."
+            exit 1
+          fi
+          publish=true
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
+            if [ "$DISPATCH_DRY_RUN" != false ]; then
+              publish=false
+            elif [ "$GITHUB_REF" != "refs/tags/$TAG" ]; then
+              echo "::error::a real publication runs from the tag itself: gh workflow run release.yml --ref $TAG -f dry_run=false"
+              exit 1
+            fi
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+          echo "Release $TAG (event $GITHUB_EVENT_NAME, ref $GITHUB_REF, publish: $publish)"
+
+      - name: Checkout the tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ steps.rel.outputs.tag }}
+          persist-credentials: false
+
+      - name: Read the mod facts
+        id: facts
+        run: bash .github/scripts/mod-facts.sh gradle.properties
+
+      - name: The tag must match gradle.properties
+        env:
+          TAG: ${{ steps.rel.outputs.tag }}
+          VERSION: ${{ steps.facts.outputs.version }}
+        run: |
+          if [ "$TAG" != "v$VERSION" ]; then
+            echo "::error::the tag is $TAG, but gradle.properties says version=$VERSION."
+            exit 1
+          fi
+
+      - name: Release notes
+        env:
+          TAG: ${{ steps.rel.outputs.tag }}
+        run: bash .github/scripts/check-release-notes.sh "$TAG" .
+
+      - name: The wrapper's executable bit
+        run: |
+          mode="$(git ls-files -s gradlew | cut -d' ' -f1)"
+          if [ "$mode" != "100755" ]; then
+            echo "::warning file=gradlew::gradlew is stored with mode ${mode:-<missing>}, not 100755. This build does not depend on it; a fresh clone does."
+          fi
+          chmod +x gradlew
+
+      - name: Set up JDK
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: ${{ steps.facts.outputs.java_version }}
+
+      # Read-only: a tag run must never write the shared cache. The basic
+      # provider is the open-source cache implementation; the default one is a
+      # proprietary component under separate terms of use.
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
+        with:
+          cache-provider: basic
+          cache-read-only: true
+
+      # One build per Minecraft line (gradle/mc/): a jar cannot serve two lines
+      # even from identical source.
+      - name: Build, unit tests and game tests (every line, both loaders)
+        run: bash .github/scripts/ci-build.sh --release
+
+      # Every jar is checked against its own expectations - name, loader
+      # metadata, and the Minecraft range it declares against its line.
+      - name: Verify every artifact
+        run: |
+          bash .github/scripts/release-targets.sh . | tee targets.tsv
+          fail=0
+          while IFS="$(printf '\t')" read -r line loader _jar _type; do
+            bash .github/scripts/verify-artifact.sh "$loader" "$line" . || fail=1
+          done < targets.tsv
+          rm -f targets.tsv
+          exit $fail
+
+      # The checksums travel with the jars and are published as a release asset.
+      # They are never committed: a file in the repository describes a build that
+      # is not the one players download.
+      - name: Collect the jars and their checksums
+        run: |
+          mkdir -p dist
+          bash .github/scripts/release-targets.sh . > targets.tsv
+          while IFS="$(printf '\t')" read -r line loader jar _type; do
+            cp "$loader/build/libs/$jar" dist/
+          done < targets.tsv
+          rm -f targets.tsv
+          (cd dist && sha256sum -- *.jar > SHA256SUMS.txt && cat SHA256SUMS.txt)
+
+      - name: Hand the jars to the publish job
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-jars
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30
+          overwrite: true
+
+      - name: Dry run
+        if: steps.rel.outputs.publish != 'true'
+        env:
+          TAG: ${{ steps.rel.outputs.tag }}
+        run: echo "::notice::dry run - $TAG was built and verified; nothing is published."
+
+  publish:
+    name: Publish
+    needs: build
+    if: needs.build.outputs.publish == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    environment: release
+    permissions:
+      contents: write      # create the GitHub Release
+      actions: read        # read earlier runs of this tag: the CurseForge re-run guard
+      id-token: write      # sign the build provenance
+      attestations: write  # store it
+    steps:
+      - name: Checkout the tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ needs.build.outputs.tag }}
+          persist-credentials: false
+
+      - name: Read the mod facts
+        id: facts
+        run: bash .github/scripts/mod-facts.sh gradle.properties
+
+      # Only whether each token exists reaches this step, never its value.
+      - name: Decide the platforms
+        id: config
+        env:
+          SKIP_MODRINTH: ${{ vars.SKIP_MODRINTH }}
+          SKIP_CURSEFORGE: ${{ vars.SKIP_CURSEFORGE }}
+          MODRINTH_PROJECT_ID: ${{ vars.MODRINTH_PROJECT_ID }}
+          CURSEFORGE_PROJECT_ID: ${{ vars.CURSEFORGE_PROJECT_ID }}
+          HAS_MODRINTH_TOKEN: ${{ secrets.MODRINTH_TOKEN != '' }}
+          HAS_CURSEFORGE_TOKEN: ${{ secrets.CURSEFORGE_TOKEN != '' }}
+        run: bash .github/scripts/release-config.sh --workflow
+
+      - name: Download the jars
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-jars
+          path: dist/build
+
+      - name: Check the jars against their checksums
+        working-directory: dist/build
+        run: sha256sum --check --strict SHA256SUMS.txt
+
+      # Everything that can refuse the release is asked before the first upload,
+      # so a mistake stops it while nothing is public yet: every line has its
+      # CurseForge id, and every id is still the one CurseForge knows by that name.
+      - name: Verify the CurseForge version ids
+        id: cf_ids
+        if: steps.config.outputs.curseforge == 'publish'
+        env:
+          CURSEFORGE_TOKEN: ${{ secrets.CURSEFORGE_TOKEN }}
+          CURSEFORGE_ENVIRONMENTS: ${{ steps.facts.outputs.curseforge_environments }}
+        run: bash .github/scripts/publish-curseforge.sh --resolve-ids
+
+      - name: Find Modrinth versions already published
+        id: mr_check
+        if: steps.config.outputs.modrinth == 'publish'
+        env:
+          MODRINTH_PROJECT_ID: ${{ vars.MODRINTH_PROJECT_ID }}
+          VERSION: ${{ steps.facts.outputs.version }}
+        run: bash .github/scripts/publish-modrinth.sh --check
+
+      - name: Find CurseForge files already published
+        id: cf_check
+        if: steps.config.outputs.curseforge == 'publish'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CURSEFORGE_PROJECT_ID: ${{ vars.CURSEFORGE_PROJECT_ID }}
+          VERSION: ${{ steps.facts.outputs.version }}
+          MOD_ID: ${{ steps.facts.outputs.mod_id }}
+          MOD_NAME: ${{ steps.facts.outputs.mod_name }}
+        run: RELEASE_TAG_SHA="$(git rev-parse HEAD)" bash .github/scripts/publish-curseforge.sh --check
+
+      - name: Resolve the files to publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.build.outputs.tag }}
+          MOD_ID: ${{ steps.facts.outputs.mod_id }}
+          VERSION: ${{ steps.facts.outputs.version }}
+        run: bash .github/scripts/publish-github-release.sh resolve dist/build dist/release
+
+      # Anyone can check a downloaded jar against this run:
+      #   gh attestation verify <jar> --repo <owner>/<repo>
+      - name: Attest the build provenance of the jars
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: dist/release/*.jar
+
+      - name: GitHub Release
+        id: gh_release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.build.outputs.tag }}
+          RELEASE_TITLE: ${{ steps.facts.outputs.mod_name }} ${{ steps.facts.outputs.version }}
+          NOTES: release-notes/${{ needs.build.outputs.tag }}.md
+          MOD_ID: ${{ steps.facts.outputs.mod_id }}
+          VERSION: ${{ steps.facts.outputs.version }}
+        run: bash .github/scripts/publish-github-release.sh publish dist/release
+
+      # One Modrinth version per loader and line: X.Y.Z+<loader>-<line>.
+
+      - name: Publish Fabric 26.2 to Modrinth
+        id: mr_fabric_26_2
+        if: steps.config.outputs.modrinth == 'publish' && steps.mr_check.outputs.fabric_26_2_exists == 'false'
+        env:
+          MODRINTH_TOKEN: ${{ secrets.MODRINTH_TOKEN }}
+          MODRINTH_PROJECT_ID: ${{ vars.MODRINTH_PROJECT_ID }}
+          MODRINTH_ENVIRONMENT: ${{ steps.facts.outputs.modrinth_environment }}
+          VERSION: ${{ steps.facts.outputs.version }}
+          MOD_ID: ${{ steps.facts.outputs.mod_id }}
+          MOD_NAME: ${{ steps.facts.outputs.mod_name }}
+          JAR_DIR: dist/release
+          NOTES: release-notes/${{ needs.build.outputs.tag }}.md
+        run: bash .github/scripts/publish-modrinth.sh fabric 26.2
+
+      - name: Publish NeoForge 26.2 to Modrinth
+        id: mr_neoforge_26_2
+        if: steps.config.outputs.modrinth == 'publish' && steps.mr_check.outputs.neoforge_26_2_exists == 'false'
+        env:
+          MODRINTH_TOKEN: ${{ secrets.MODRINTH_TOKEN }}
+          MODRINTH_PROJECT_ID: ${{ vars.MODRINTH_PROJECT_ID }}
+          MODRINTH_ENVIRONMENT: ${{ steps.facts.outputs.modrinth_environment }}
+          VERSION: ${{ steps.facts.outputs.version }}
+          MOD_ID: ${{ steps.facts.outputs.mod_id }}
+          MOD_NAME: ${{ steps.facts.outputs.mod_name }}
+          JAR_DIR: dist/release
+          NOTES: release-notes/${{ needs.build.outputs.tag }}.md
+        run: bash .github/scripts/publish-modrinth.sh neoforge 26.2
+
+      - name: Publish Fabric 26.3 to Modrinth
+        id: mr_fabric_26_3
+        if: steps.config.outputs.modrinth == 'publish' && steps.mr_check.outputs.fabric_26_3_exists == 'false'
+        env:
+          MODRINTH_TOKEN: ${{ secrets.MODRINTH_TOKEN }}
+          MODRINTH_PROJECT_ID: ${{ vars.MODRINTH_PROJECT_ID }}
+          MODRINTH_ENVIRONMENT: ${{ steps.facts.outputs.modrinth_environment }}
+          VERSION: ${{ steps.facts.outputs.version }}
+          MOD_ID: ${{ steps.facts.outputs.mod_id }}
+          MOD_NAME: ${{ steps.facts.outputs.mod_name }}
+          JAR_DIR: dist/release
+          NOTES: release-notes/${{ needs.build.outputs.tag }}.md
+        run: bash .github/scripts/publish-modrinth.sh fabric 26.3
+
+      - name: Publish NeoForge 26.3 to Modrinth
+        id: mr_neoforge_26_3
+        if: steps.config.outputs.modrinth == 'publish' && steps.mr_check.outputs.neoforge_26_3_exists == 'false'
+        env:
+          MODRINTH_TOKEN: ${{ secrets.MODRINTH_TOKEN }}
+          MODRINTH_PROJECT_ID: ${{ vars.MODRINTH_PROJECT_ID }}
+          MODRINTH_ENVIRONMENT: ${{ steps.facts.outputs.modrinth_environment }}
+          VERSION: ${{ steps.facts.outputs.version }}
+          MOD_ID: ${{ steps.facts.outputs.mod_id }}
+          MOD_NAME: ${{ steps.facts.outputs.mod_name }}
+          JAR_DIR: dist/release
+          NOTES: release-notes/${{ needs.build.outputs.tag }}.md
+        run: bash .github/scripts/publish-modrinth.sh neoforge 26.3
+
+      # The step names below are read by the re-run guard in publish-curseforge.sh and by
+      # the post-release verification: keep them, and keep one step per line and loader.
+
+      - name: Publish Fabric 26.2 to CurseForge
+        id: cf_fabric_26_2
+        if: steps.config.outputs.curseforge == 'publish' && steps.cf_check.outputs.fabric_26_2_exists == 'false'
+        env:
+          CURSEFORGE_TOKEN: ${{ secrets.CURSEFORGE_TOKEN }}
+          CURSEFORGE_PROJECT_ID: ${{ vars.CURSEFORGE_PROJECT_ID }}
+          GAME_VERSION_IDS: ${{ steps.cf_ids.outputs.fabric_26_2_ids }}
+          VERSION: ${{ steps.facts.outputs.version }}
+          MOD_ID: ${{ steps.facts.outputs.mod_id }}
+          MOD_NAME: ${{ steps.facts.outputs.mod_name }}
+          JAR_DIR: dist/release
+          NOTES: release-notes/${{ needs.build.outputs.tag }}.md
+        run: bash .github/scripts/publish-curseforge.sh fabric 26.2
+
+      - name: Publish NeoForge 26.2 to CurseForge
+        id: cf_neoforge_26_2
+        if: steps.config.outputs.curseforge == 'publish' && steps.cf_check.outputs.neoforge_26_2_exists == 'false'
+        env:
+          CURSEFORGE_TOKEN: ${{ secrets.CURSEFORGE_TOKEN }}
+          CURSEFORGE_PROJECT_ID: ${{ vars.CURSEFORGE_PROJECT_ID }}
+          GAME_VERSION_IDS: ${{ steps.cf_ids.outputs.neoforge_26_2_ids }}
+          VERSION: ${{ steps.facts.outputs.version }}
+          MOD_ID: ${{ steps.facts.outputs.mod_id }}
+          MOD_NAME: ${{ steps.facts.outputs.mod_name }}
+          JAR_DIR: dist/release
+          NOTES: release-notes/${{ needs.build.outputs.tag }}.md
+        run: bash .github/scripts/publish-curseforge.sh neoforge 26.2
+
+      - name: Publish Fabric 26.3 to CurseForge
+        id: cf_fabric_26_3
+        if: steps.config.outputs.curseforge == 'publish' && steps.cf_check.outputs.fabric_26_3_exists == 'false'
+        env:
+          CURSEFORGE_TOKEN: ${{ secrets.CURSEFORGE_TOKEN }}
+          CURSEFORGE_PROJECT_ID: ${{ vars.CURSEFORGE_PROJECT_ID }}
+          GAME_VERSION_IDS: ${{ steps.cf_ids.outputs.fabric_26_3_ids }}
+          VERSION: ${{ steps.facts.outputs.version }}
+          MOD_ID: ${{ steps.facts.outputs.mod_id }}
+          MOD_NAME: ${{ steps.facts.outputs.mod_name }}
+          JAR_DIR: dist/release
+          NOTES: release-notes/${{ needs.build.outputs.tag }}.md
+        run: bash .github/scripts/publish-curseforge.sh fabric 26.3
+
+      - name: Publish NeoForge 26.3 to CurseForge
+        id: cf_neoforge_26_3
+        if: steps.config.outputs.curseforge == 'publish' && steps.cf_check.outputs.neoforge_26_3_exists == 'false'
+        env:
+          CURSEFORGE_TOKEN: ${{ secrets.CURSEFORGE_TOKEN }}
+          CURSEFORGE_PROJECT_ID: ${{ vars.CURSEFORGE_PROJECT_ID }}
+          GAME_VERSION_IDS: ${{ steps.cf_ids.outputs.neoforge_26_3_ids }}
+          VERSION: ${{ steps.facts.outputs.version }}
+          MOD_ID: ${{ steps.facts.outputs.mod_id }}
+          MOD_NAME: ${{ steps.facts.outputs.mod_name }}
+          JAR_DIR: dist/release
+          NOTES: release-notes/${{ needs.build.outputs.tag }}.md
+        run: bash .github/scripts/publish-curseforge.sh neoforge 26.3
+
+      # Every target in one table, also when the run failed half-way. The whole
+      # `steps` context travels as data; the script reads it with jq.
+      - name: Summary
+        if: always()
+        env:
+          STEPS_JSON: ${{ toJSON(steps) }}
+        run: bash .github/scripts/release-summary.sh

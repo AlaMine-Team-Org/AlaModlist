@@ -1,0 +1,11 @@
+HTTP/1.1 413 Content Too Large
+X-Powered-By: PHP/8.3.11
+Content-Type: application/json
+X-RateLimit-Limit: 10
+X-RateLimit-Remaining: 9
+X-Frame-Options: SAMEORIGIN
+X-Content-Type-Options: nosniff
+Referrer-Policy: strict-origin-when-cross-origin
+Vary: Origin
+
+{"success":false,"error":"The body is larger than this server accepts (1,048,576 bytes).","error_code":"too_large"}

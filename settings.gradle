@@ -1,0 +1,168 @@
+pluginManagement {
+    repositories {
+        gradlePluginPortal()
+        mavenCentral()
+        // ModDevGradle: the NeoForm-provided Minecraft classpath for :common-mc, and NeoForge itself.
+        maven {
+            name = 'NeoForged'
+            url = uri('https://maven.neoforged.net/releases')
+        }
+        // Fabric artifacts come from the Fabric maven and from nowhere else.
+        exclusiveContent {
+            forRepository {
+                maven {
+                    name = 'Fabric'
+                    url = uri('https://maven.fabricmc.net/')
+                }
+            }
+            filter {
+                includeGroupAndSubgroups('net.fabricmc')
+            }
+        }
+    }
+}
+
+plugins {
+    id 'org.gradle.toolchains.foojay-resolver-convention' version '1.0.0'
+}
+
+// -------------------------------------------------------------------------------------------------
+// One Gradle build per project directory.
+//
+// Gradle does NOT stop two daemons from running tasks in the same directory at the same time: its
+// locks cover individual cache files, not the `build/` tree. Two builds in one tree write the same
+// outputs, and the collision does not look like "busy" - it looks like random damage somewhere
+// else: an EOFException in a test task, or a "package ... does not exist" in a compile task whose
+// classpath is perfectly fine.
+//
+// So the build takes an exclusive OS lock on `<directory>/.gradle/mod-build.lock` for its whole
+// duration. A second build in the same directory fails at once and names the holder, instead of
+// failing two minutes later with a compile error that does not exist. A separate checkout (or git
+// worktree) has its own settings directory and therefore its own lock.
+//
+// One-off bypass: ./gradlew ... -PallowConcurrentBuilds
+//
+// A BuildService rather than `Gradle.buildFinished` (deprecated): Gradle closes the service at the
+// end of the build, failures included. The lock cannot live in a static - the daemon is reused, so
+// the next build in the same directory would block against itself. A killed process releases the
+// lock through the OS.
+// -------------------------------------------------------------------------------------------------
+import java.nio.channels.FileChannel
+import java.nio.channels.FileLock
+import java.nio.channels.OverlappingFileLockException
+import java.nio.file.StandardOpenOption
+import org.gradle.api.services.BuildService
+import org.gradle.api.services.BuildServiceParameters
+
+abstract class SingleBuildPerDirectory implements BuildService<SingleBuildPerDirectory.Params>, AutoCloseable {
+    interface Params extends BuildServiceParameters {
+        /** Lock file in `.gradle/` (gitignored). Its contents do not matter - the lock does. */
+        Property<String> getLockPath()
+        /** The neighbouring "who holds it" file: the build that loses reads it, so it is never locked. */
+        Property<String> getInfoPath()
+        /** The "who holds it" line: daemon pid plus start time. */
+        Property<String> getOwner()
+    }
+
+    private FileChannel channel
+    private FileLock lock
+
+    SingleBuildPerDirectory() {
+        File lockFile = new File(parameters.lockPath.get())
+        lockFile.parentFile.mkdirs()
+        channel = FileChannel.open(lockFile.toPath(),
+                StandardOpenOption.CREATE, StandardOpenOption.READ, StandardOpenOption.WRITE)
+        try {
+            lock = channel.tryLock()
+        } catch (OverlappingFileLockException ignored) {
+            // This JVM already holds the lock, which for our purpose is the same "taken".
+            lock = null
+        }
+        if (lock == null) {
+            channel.close()
+            File info = new File(parameters.infoPath.get())
+            // Read explicitly as UTF-8: the file is written as UTF-8, and File.getText() without an
+            // argument uses the platform encoding (cp1251 on a Russian Windows).
+            String holder = info.isFile() ? info.getText('UTF-8').trim() : 'unknown'
+            throw new GradleException("""Another Gradle build is already running in this directory.
+  directory: ${lockFile.parentFile.parentFile}
+  held by:   ${holder}
+Two builds in one tree write to the same `build/` and break each other - that is where random
+EOFExceptions in test tasks and phantom "package ... does not exist" compile errors come from.
+Wait for it to finish, or build in a separate checkout or git worktree.
+One-off bypass, if you are sure: -PallowConcurrentBuilds""")
+        }
+        new File(parameters.infoPath.get()).setText(parameters.owner.get(), 'UTF-8')
+    }
+
+    @Override
+    void close() {
+        try { lock?.release() } catch (Exception ignored) { }
+        try { channel?.close() } catch (Exception ignored) { }
+    }
+}
+
+if (!gradle.startParameter.projectProperties.containsKey('allowConcurrentBuilds')) {
+    File lockDir = new File(settingsDir, '.gradle')
+    gradle.sharedServices.registerIfAbsent('singleBuildPerDirectory', SingleBuildPerDirectory) {
+        parameters.lockPath.set(new File(lockDir, 'mod-build.lock').absolutePath)
+        parameters.infoPath.set(new File(lockDir, 'mod-build.lock.info').absolutePath)
+        parameters.owner.set("Gradle daemon (pid ${ProcessHandle.current().pid()}), started ${new Date().format('yyyy-MM-dd HH:mm:ss')}".toString())
+    }.get()   // .get() takes the lock right now, during settings, before any task runs.
+}
+
+rootProject.name = 'alamodlist'
+
+includeBuild('build-logic')
+
+// Four modules, mirroring how code is allowed to depend on Minecraft:
+//
+//   common     pure Java - logic, config engine, build info. No Minecraft on the classpath at all,
+//              so it is tested with plain JUnit in milliseconds and the compiler, not a code review,
+//              keeps game types out of it.
+//   common-mc  the loader-neutral Minecraft layer: content, networking, commands, screens, mixins
+//              and all game resources. Compiled against NeoForm (vanilla, Mojang names), so one copy
+//              serves both loaders.
+//   fabric     entrypoints and the Fabric-specific registration and hooks. Deliberately thin.
+//   neoforge   the same for NeoForge. Its entrypoints mirror Fabric's step for step; when the two
+//              drift, the mod has quietly become two mods.
+include('common')
+include('common-mc')
+include('fabric')
+include('neoforge')
+
+// -------------------------------------------------------------------------------------------------
+// The Minecraft line of this build.
+//
+// `mc` comes from gradle.properties or from -Pmc=... on the command line and names a file in
+// gradle/mc/, which holds every version tied to that line: Minecraft, NeoForm, Fabric Loader and API,
+// NeoForge, their declared minimums and Mod Menu. Every project gets those keys as extra properties
+// before its build script runs, so the scripts (and build-logic) read `minecraft_version` exactly as
+// they would if it sat in gradle.properties. A key is declared in one of the two files, never both:
+// a value in gradle.properties would silently win over the line's file, so it is refused here.
+//
+// One jar cannot serve two lines even when the source is identical (constants are inlined at compile
+// time and a release renumbers some), so each line is its own build and a release builds each of them.
+// -------------------------------------------------------------------------------------------------
+def mcLine = providers.gradleProperty('mc').getOrNull()
+if (!(mcLine ==~ /\d+\.\d+(\.\d+)?/)) {
+    throw new GradleException("Set the Minecraft line with -Pmc=<version> (one of gradle/mc/*.properties) or `mc=` in gradle.properties, got: ${mcLine}")
+}
+def mcFile = file("gradle/mc/${mcLine}.properties")
+if (!mcFile.isFile()) {
+    throw new GradleException("No such Minecraft line: ${mcLine} - expected ${mcFile}")
+}
+def mcVersions = new Properties()
+mcFile.withInputStream { mcVersions.load(it) }
+if (mcVersions.getProperty('minecraft_version') != mcLine) {
+    throw new GradleException("${mcFile.name} declares minecraft_version=${mcVersions.getProperty('minecraft_version')}, not ${mcLine}")
+}
+mcVersions.each { key, value ->
+    if (providers.gradleProperty(key as String).isPresent()) {
+        throw new GradleException("`${key}` is declared in ${mcFile.name} and also in gradle.properties or on the command line - " +
+                'a line key lives in the line file only.')
+    }
+}
+gradle.beforeProject { project ->
+    mcVersions.each { key, value -> project.ext.set(key as String, value as String) }
+}

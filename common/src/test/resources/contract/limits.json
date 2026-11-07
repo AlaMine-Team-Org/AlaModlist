@@ -1,0 +1,51 @@
+{
+  "success": true,
+  "storageTime": 7776000,
+  "maxBytes": 1048576,
+  "maxEntries": 2000,
+  "maxPlugins": 500,
+  "idLength": 12,
+  "fieldLengths": {
+    "id": 128,
+    "name": 160,
+    "version": 64,
+    "fileName": 160,
+    "title": 80,
+    "note": 500,
+    "source": 64,
+    "license": 128,
+    "author": 80,
+    "authors": 16,
+    "packTitle": 160,
+    "packFormat": 16,
+    "shaderName": 160,
+    "launcherBrand": 64,
+    "launcherVersion": 64,
+    "launcherInstance": 80,
+    "loaderVersion": 64,
+    "mcVersion": 32,
+    "pluginName": 128,
+    "pluginVersion": 64
+  },
+  "server": {
+    "maxChannels": 500,
+    "maxNamespaces": 200,
+    "maxFeatureFlags": 64,
+    "maxMods": 1000,
+    "maxCommandReplies": 4,
+    "maxCommandRoots": 300,
+    "fieldLengths": {
+      "brand": 64,
+      "pingVersion": 64,
+      "channelId": 128,
+      "channelVersion": 32,
+      "namespace": 64,
+      "featureFlag": 128,
+      "modFileName": 160,
+      "modId": 128,
+      "modVersion": 64,
+      "commandText": 8192,
+      "commandRoot": 64
+    }
+  }
+}

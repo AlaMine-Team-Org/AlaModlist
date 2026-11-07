@@ -1,0 +1,109 @@
+plugins {
+    id 'multiloader-common'
+    id 'net.neoforged.moddev'
+}
+
+// ModDevGradle is applied for one reason: `neoFormVersion` gives this module a compile-time
+// Minecraft classpath in Mojang names without any loader. That is what lets the game layer - content,
+// networking, commands, screens, mixins - live here once and be recompiled into both loader jars.
+// Mojang names are not a preference: Yarn does not exist for 26.x, and the game ships unobfuscated.
+neoForge {
+    neoFormVersion = neo_form_version
+}
+
+// Game-test scenario BODIES live in their own source set, so they never reach a shipped jar. Each
+// loader compiles them into its own gametest source set and wires every body into its runner (a
+// Fabric @GameTest wrapper, a NeoForge registerTest line) - one body, two lanes.
+sourceSets {
+    gametest {
+        compileClasspath += sourceSets.main.compileClasspath + sourceSets.main.output
+    }
+    // The architecture tests read BYTECODE: their fixtures reference real game types (a client class, a
+    // Registry.register call) and must compile, but they are never executed - so the game is on the
+    // test COMPILE classpath only, and the unit-test run stays Minecraft-free.
+    test {
+        compileClasspath += sourceSets.main.compileClasspath
+    }
+}
+
+dependencies {
+    compileOnly(project(':common'))
+    compileOnly(libs.slf4j.api)
+
+    // Both loaders bundle Fabric Mixin and MixinExtras, so mixins can live here, once, instead of a
+    // copy per loader. Declared twice on purpose: the catalog accessor is a Provider, and the nested
+    // `compileOnly(annotationProcessor(...))` form only accepts a plain notation.
+    compileOnly(libs.sponge.mixin)
+    compileOnly(libs.mixinextras.common)
+    annotationProcessor(libs.mixinextras.common)
+
+    // Unit tests of this module read the compiled bytecode (ArchUnit) and the resources on disk;
+    // they never boot the game. :common is on the test classpath so a test can read the config
+    // declarations (the lang catalog checks every knob has a label).
+    testImplementation(platform(libs.junit.bom))
+    testImplementation('org.junit.jupiter:junit-jupiter')
+    testRuntimeOnly('org.junit.platform:junit-platform-launcher')
+    testImplementation(libs.archunit.junit5)
+    testImplementation(project(':common'))
+    testImplementation(libs.gson)
+    testImplementation(libs.slf4j.api)
+    testRuntimeOnly(libs.slf4j.nop)
+}
+
+test {
+    useJUnitPlatform()
+    // LineProbeTest compares the line its twin was compiled for with the line this build selected.
+    systemProperty("${mod_id}.mc.line", minecraft_version)
+    // The source lints (lint/*LintTest) read the sources of EVERY line and of the loader modules, not only
+    // what this build compiles - without these inputs an edit of the other line's twin would leave the
+    // test up to date (or served from the build cache) and the lint would not run.
+    inputs.files(fileTree('src/mc'), fileTree('../common/src/main/java'),
+            fileTree('../fabric/src/main/java'), fileTree('../neoforge/src/main/java'))
+            .withPropertyName('lintedSources')
+            .withPathSensitivity(PathSensitivity.RELATIVE)
+    // The architecture fixtures are read as class files by ArchUnit, never loaded: they reference game
+    // classes that are not on the test runtime classpath, and test discovery would try to load them.
+    exclude('**/archfixture/**')
+    testLogging {
+        events 'failed'
+        exceptionFormat = 'full'
+    }
+}
+
+// Keep the scenario bodies type-checked by the ordinary build - otherwise a broken scenario would
+// only surface when a loader's gametest lane compiles it.
+tasks.named('check') {
+    dependsOn(tasks.named('compileGametestJava'))
+}
+
+// Code and resources that differ between Minecraft lines live in src/mc/<line>/java and
+// src/mc/<line>/resources, one copy per line with the same class name; only the directory of the line
+// being built is a source directory (the line comes from gradle/mc/, see settings.gradle). A line with
+// nothing to say has no directory - Gradle takes a missing source directory as empty.
+sourceSets.main.java.srcDir("src/mc/${minecraft_version}/java")
+sourceSets.main.resources.srcDir("src/mc/${minecraft_version}/resources")
+// The game-test glue can differ between lines too (the shape of the TestData record): src/mc/<line>/gametest/java.
+sourceSets.gametest.java.srcDir("src/mc/${minecraft_version}/gametest/java")
+
+// Same source-sharing contract as :common - the loader modules compile these sources themselves.
+configurations {
+    commonJava {
+        canBeResolved = false
+        canBeConsumed = true
+    }
+    commonResources {
+        canBeResolved = false
+        canBeConsumed = true
+    }
+    commonGametestJava {
+        canBeResolved = false
+        canBeConsumed = true
+    }
+}
+
+artifacts {
+    // Every source directory, not one: `src/main` plus the directory of the line being built.
+    sourceSets.main.java.srcDirs.each { dir -> commonJava dir }
+    sourceSets.main.resources.srcDirs.each { dir -> commonResources dir }
+    sourceSets.gametest.java.srcDirs.each { dir -> commonGametestJava dir }
+}

@@ -1,0 +1,11 @@
+HTTP/1.1 200 OK
+X-Powered-By: PHP/8.3.11
+Content-Type: application/json
+X-RateLimit-Limit: 30
+X-RateLimit-Remaining: 28
+X-Frame-Options: SAMEORIGIN
+X-Content-Type-Options: nosniff
+Referrer-Policy: strict-origin-when-cross-origin
+Vary: Origin
+
+{"success":true}

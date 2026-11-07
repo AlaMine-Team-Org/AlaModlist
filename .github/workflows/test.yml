@@ -1,0 +1,95 @@
+# Proves this repository builds and passes its tests on its own: for every
+# Minecraft line (the files of gradle/mc/), both loaders, the unit tests, the
+# Fabric game tests (part of `build`) and, for a mod that has a world, the
+# NeoForge game tests. A file missing from this repository breaks the build
+# here first.
+#
+# No secrets and read-only permissions: pull requests from forks run this too.
+# Release commits are skipped - the tag on the same commit runs release.yml,
+# which performs this build and more.
+name: Tests
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  # Weekly on the default branch. Only a default-branch run writes the Gradle
+  # cache, and most pushes there are release commits, which this workflow skips;
+  # without the schedule the cache would go stale and every release would pay
+  # for provisioning Minecraft and the loaders again.
+  schedule:
+    - cron: '17 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Build and test
+    # `>-` because a scalar that starts with `!` is a YAML tag, not a negation.
+    if: >-
+      github.event_name != 'push' ||
+      !startsWith(github.event.head_commit.message, 'Release v')
+    # The same image as release.yml, so a green test run vouches for the machine
+    # the release is built on. Move both together.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Read the mod facts
+        id: facts
+        run: bash .github/scripts/mod-facts.sh gradle.properties
+
+      - name: The wrapper must be executable in git
+        run: |
+          mode="$(git ls-files -s gradlew | cut -d' ' -f1)"
+          if [ "$mode" != "100755" ]; then
+            echo "::error file=gradlew::gradlew is stored with mode ${mode:-<missing>}, not 100755; a fresh clone cannot run it on Linux or macOS."
+            exit 1
+          fi
+
+      - name: Set up JDK
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: ${{ steps.facts.outputs.java_version }}
+
+      # cache-provider basic: the open-source cache implementation. The default
+      # provider is a proprietary component under separate terms of use.
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
+        with:
+          cache-provider: basic
+
+      - name: Build, unit tests and game tests (every line, both loaders)
+        run: bash .github/scripts/ci-build.sh
+
+      - name: Verify every artifact
+        run: |
+          bash .github/scripts/release-targets.sh . > targets.tsv
+          fail=0
+          while IFS="$(printf '\t')" read -r line loader _jar _type; do
+            bash .github/scripts/verify-artifact.sh "$loader" "$line" . || fail=1
+          done < targets.tsv
+          rm -f targets.tsv
+          exit $fail
+
+      - name: Keep the reports of a failed run
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: test-reports
+          path: |
+            **/build/reports/
+            **/build/test-results/
+          if-no-files-found: ignore
+          retention-days: 14

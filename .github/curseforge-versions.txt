@@ -1,0 +1,29 @@
+# CurseForge game-version ids the release workflow sends with every upload.
+#
+# CurseForge identifies Minecraft versions, loaders and environments by numeric
+# id. The ids are pinned here and never looked up by name, because a name can be
+# ambiguous: "26.2" also matches a stale legacy entry, and an upload tagged with
+# it is rejected with errorCode 1009. Before anything is uploaded, the workflow
+# asks CurseForge for the name behind each pinned id and stops on any mismatch,
+# so a renumbered entry fails loudly instead of tagging a file wrongly.
+#
+# One `minecraft.<line>` row per Minecraft line of the mod (gradle/mc/<line>.properties),
+# and the row's name must be that line. The release is refused, before anything is
+# published, when a line has no row or a row has no line. Moving to a new Minecraft
+# version means looking up its id and adding a row.
+#
+# Java versions are deliberately absent: an upload that names one is rejected
+# (errorCode 1009).
+#
+# Ids of the two Minecraft lines: 16498 is 26.2, the id every earlier release of the
+# sibling mods used. 17045 is 26.3, confirmed by real uploads of the sibling mods
+# (their 26.3 files went up with it). The check against CurseForge's own list still
+# runs before the first upload of every release.
+#
+# key              id      name
+minecraft.26.2     16498   26.2
+minecraft.26.3     17045   26.3
+fabric             7499    Fabric
+neoforge           10150   NeoForge
+client             9638    Client
+server             9639    Server

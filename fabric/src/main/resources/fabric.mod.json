@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "id": "${mod_id}",
+  "version": "${version}",
+  "name": "${mod_name}",
+  "description": "${description}",
+  "authors": [
+    "${mod_author}"
+  ],
+  "contact": {
+    "homepage": "${mod_homepage_url}",
+    "sources": "${mod_sources_url}",
+    "issues": "${mod_issues_url}"
+  },
+  "license": "${license}",
+  "icon": "assets/${mod_id}/icon.png",
+  "environment": "${mod_environment}",
+  "entrypoints": {
+    "client": [
+      "day.alacraft.alamodlist.fabric.client.AlaModlistFabricClient"
+    ],
+    "modmenu": [
+      "day.alacraft.alamodlist.fabric.client.ModMenuIntegration"
+    ]
+  },
+  "mixins": [
+    "${mod_id}.mixins.json"
+  ],
+  "depends": {
+    "fabricloader": ">=${fabric_loader_min_version}",
+    "minecraft": "~${minecraft_version}",
+    "java": ">=${java_version}",
+    "fabric-api": ">=${fabric_api_min_version}"
+  }
+}

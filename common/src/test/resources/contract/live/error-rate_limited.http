@@ -1,0 +1,13 @@
+HTTP/1.1 429 Too Many Requests
+X-Powered-By: PHP/8.3.11
+X-RateLimit-Limit: 10
+X-RateLimit-Remaining: 0
+Retry-After: 3596
+X-RateLimit-Reset: 1794029330
+Content-Type: application/json
+X-Frame-Options: SAMEORIGIN
+X-Content-Type-Options: nosniff
+Referrer-Policy: strict-origin-when-cross-origin
+Vary: Origin
+
+{"success":false,"error":"Rate limit exceeded. Wait for the window to reset and try again.","error_code":"rate_limited"}

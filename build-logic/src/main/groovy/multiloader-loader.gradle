@@ -1,0 +1,43 @@
+plugins {
+    id 'multiloader-common'
+}
+
+// The shared modules are consumed as SOURCE, not as a jar.
+//
+// Each loader recompiles common/ and common-mc/ with its own toolchain and against its own
+// Minecraft classpath - vanilla patched by that loader. That second compilation is the point: a
+// signature the loader patched differently fails the build here instead of failing at runtime on
+// one loader only. It is also what keeps a loader module an adapter of a few hundred lines rather
+// than a parallel copy of the mod.
+configurations {
+    commonJava {
+        canBeResolved = true
+    }
+    commonResources {
+        canBeResolved = true
+    }
+}
+
+dependencies {
+    // For IDE resolution only - the compilation below reads the source directories.
+    compileOnly(project(':common'))
+    compileOnly(project(':common-mc'))
+
+    commonJava(project(path: ':common', configuration: 'commonJava'))
+    commonJava(project(path: ':common-mc', configuration: 'commonJava'))
+    // Both shared modules contribute resources: assets, data, lang and the mixin config live in
+    // common-mc (they belong to the game layer); common may carry pure resources. A path present in
+    // both fails processResources as a duplicate, which is the behaviour we want.
+    commonResources(project(path: ':common', configuration: 'commonResources'))
+    commonResources(project(path: ':common-mc', configuration: 'commonResources'))
+}
+
+tasks.named('compileJava', JavaCompile) {
+    dependsOn(configurations.commonJava)
+    source(configurations.commonJava)
+}
+
+processResources {
+    dependsOn(configurations.commonResources)
+    from(configurations.commonResources)
+}

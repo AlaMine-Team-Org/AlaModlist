@@ -1,0 +1,38 @@
+# Values come from gradle.properties through processResources (build-logic). No literal here may
+# duplicate a value from there - a literal in one manifest is how the two loaders' metadata drift.
+#
+# No modLoader/loaderVersion keys: optional since NeoForge 26.2 (the MDK dropped them), and the
+# version range they carried checked nothing.
+license = "${license}"
+issueTrackerURL = "${mod_issues_url}"
+
+[[mods]]
+modId = "${mod_id}"
+version = "${version}"
+displayName = "${mod_name}"
+authors = "${mod_author}"
+displayURL = "${mod_homepage_url}"
+description = '''${description}'''
+# iconFile, NOT the pre-26.2 logoFile: logoFile now feeds a wide banner, and a square asset under it is
+# stretched across that banner with a deprecation warning on every launch. No blur: pixel art.
+iconFile = "assets/${mod_id}/icon.png"
+iconBlur = false
+
+# NeoForge reads mixin configs only from this list; a config it was never told about silently does not
+# apply. (The gametest MixinProbe scenario turns that into a red test.)
+[[mixins]]
+config = "${mod_id}.mixins.json"
+
+[[dependencies.${mod_id}]]
+modId = "neoforge"
+type = "required"
+versionRange = "[${neoforge_min_version},)"
+ordering = "NONE"
+side = "${neoforge_side}"
+
+[[dependencies.${mod_id}]]
+modId = "minecraft"
+type = "required"
+versionRange = "${minecraft_version_range}"
+ordering = "NONE"
+side = "${neoforge_side}"

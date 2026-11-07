@@ -1,0 +1,155 @@
+plugins {
+    id 'multiloader-loader'
+    id 'net.fabricmc.fabric-loom'
+}
+
+repositories {
+    // Modrinth's maven, for Mod Menu only (modmenu_version in gradle/mc/<line>.properties).
+    maven {
+        name = 'Modrinth'
+        url = uri('https://api.modrinth.com/maven')
+        content {
+            includeGroup('maven.modrinth')
+        }
+    }
+}
+
+dependencies {
+    minecraft("com.mojang:minecraft:${minecraft_version}")
+    implementation("net.fabricmc:fabric-loader:${fabric_loader_version}")
+    implementation("net.fabricmc.fabric-api:fabric-api:${fabric_version}")
+
+    // Mod Menu: the API for the config-screen button at compile time, the full mod in dev runs.
+    // Never `include`d and never a dependency in fabric.mod.json - the mod works without it.
+    // The Mod Menu release is per Minecraft line (gradle/mc/<line>.properties): it is built against the
+    // game, not against the mod. mOgUt4GM is the Modrinth project id of Mod Menu.
+    compileOnly("maven.modrinth:mOgUt4GM:${modmenu_version}")
+    runtimeOnly("maven.modrinth:mOgUt4GM:${modmenu_version}")
+}
+
+loom {
+    runs {
+        // Run directories are per Minecraft line: a world opened on one line does not open on another.
+        client {
+            client()
+            setConfigName('Fabric Client')
+            ideConfigGenerated(true)
+            runDir("runs/${minecraft_version}/client")
+            // A fixed name keeps ops.json and per-player data stable between launches.
+            programArgs('--username', 'Dev1')
+        }
+        // A second client with its own directory and name: multiplayer behaviour (two players on
+        // one server) is tested with two clients, not imagined.
+        client2 {
+            client()
+            setConfigName('Fabric Client 2')
+            ideConfigGenerated(true)
+            runDir("runs/${minecraft_version}/client2")
+            programArgs('--username', 'Dev2')
+        }
+        server {
+            server()
+            setConfigName('Fabric Server')
+            ideConfigGenerated(true)
+            runDir("runs/${minecraft_version}/server")
+        }
+    }
+}
+
+// The profile (ADR-002) comes from mod_environment alone: 'client' is a mod with no server half, so it has
+// no server game-test lane (nothing to run there, and a lane with no test would fail `build`).
+def clientOnly = (mod_environment == 'client')
+
+// Game tests. `configureTests` creates the `gametest` source set (src/gametest/), the server lane
+// `runGameTest` (wired into `build`; not in a client-only mod) and the client lane `runClientGameTest` (L3: a
+// real client takes the frames of docs/testing/AUTOMATION-STANDARDS.md; NOT part of `build` - it needs a
+// display and minutes, so it runs on demand and on CI nights). The test mod is a separate mod
+// (${mod_id}-gametest, src/gametest/resources/fabric.mod.json), so nothing of it ships.
+fabricApi {
+    configureTests {
+        createSourceSet = true
+        modId = "${mod_id}-gametest"
+        enableGameTests = !clientOnly
+        enableClientGameTests = true
+        eula = true
+    }
+}
+
+// The game-test world is disposable, but nothing deletes it, so every run piles another world on top
+// of the last one (it reached 13 GB in one of our mods). Wiped BEFORE a run, not after: the world of
+// a run that just failed is the post-mortem, and it stays on disk until the next run starts.
+def cleanGameTestWorld = tasks.register('cleanGameTestWorld', Delete) {
+    group = 'build'
+    description = 'Delete the leftover Fabric game-test world before the next run.'
+    delete(project.layout.buildDirectory.dir('run/gameTest/world'))
+}
+
+// Matched by name: Loom creates the run task inside configureTests, after this file is evaluated.
+tasks.matching { it.name == 'runGameTest' }.configureEach {
+    dependsOn(cleanGameTestWorld)
+}
+
+// A JUnit XML report of the game-test run, so a CI can show which test failed without reading the log.
+// -PgametestRepeat=N is the stress run: every roster test must pass N times in a row (GameTestData).
+def gametestRepeat = providers.gradleProperty('gametestRepeat').orNull
+loom.runs.matching { it.name == 'gameTest' }.configureEach {
+    vmArg("-Dfabric-api.gametest.report-file=${project.layout.buildDirectory.file('test-results/gameTest/TEST-fabric-gametest.xml').get().asFile.absolutePath}")
+    if (gametestRepeat != null) {
+        vmArg("-D${mod_id}.gametest.repeat=${gametestRepeat}")
+    }
+}
+
+// The client lane wipes its run directory before a run, like the server lane: a frame left from the last
+// run must not pass for a frame of this one (tools/shot_manifest_check.py reads that directory).
+def cleanClientGameTestRun = tasks.register('cleanClientGameTestRun', Delete) {
+    group = 'build'
+    description = 'Delete the frames and world of the last Fabric client game-test run.'
+    delete(project.layout.buildDirectory.dir('run/clientGameTest'))
+}
+tasks.matching { it.name == 'runClientGameTest' }.configureEach {
+    dependsOn(cleanClientGameTestRun)
+}
+
+// Pull the shared scenario bodies (common-mc/src/gametest/java) into the Loom-created `gametest`
+// source set - never into `main`, so they never ship.
+configurations {
+    commonGametestJava {
+        canBeResolved = true
+        canBeConsumed = false
+    }
+}
+
+dependencies {
+    commonGametestJava(project(path: ':common-mc', configuration: 'commonGametestJava'))
+}
+
+tasks.named('compileGametestJava', JavaCompile) {
+    dependsOn(configurations.commonGametestJava)
+    source(configurations.commonGametestJava)
+}
+
+// A client-only mod has no server lane, and the server lane is what made `build` compile the gametest source
+// set. The client lane (L3) runs on demand, so without this a broken stand would surface only in the minutes-long
+// `runClientGameTest`: the ordinary build type-checks it instead (as :common-mc does for its scenario bodies).
+if (clientOnly) {
+    tasks.named('check') {
+        dependsOn(tasks.named('compileGametestJava'))
+    }
+}
+
+// Tag the variants with the loader they belong to (the mcgradleconventions attribute other
+// multiloader builds use), so Loom and ModDevGradle cannot pick up each other's artifacts.
+// findByName, not named(): configurations this build does not create must not fail configuration.
+def loaderAttribute = Attribute.of('io.github.mcgradleconventions.loader', String)
+['apiElements', 'runtimeElements', 'sourcesElements', 'javadocElements'].each { variant ->
+    configurations.findByName(variant)?.attributes {
+        attribute(loaderAttribute, 'fabric')
+    }
+}
+sourceSets.configureEach {
+    [it.compileClasspathConfigurationName, it.runtimeClasspathConfigurationName].each { variant ->
+        configurations.findByName(variant)?.attributes {
+            attribute(loaderAttribute, 'fabric')
+        }
+    }
+}

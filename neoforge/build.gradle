@@ -1,0 +1,128 @@
+plugins {
+    id 'multiloader-loader'
+    id 'net.neoforged.moddev'
+}
+
+// The profile (ADR-002) comes from mod_environment alone: 'client' is a mod with no server half, so it has no
+// server game-test lane at all - no source set, no test mod, no run, no tasks. (NeoForge has no client
+// game-test API, so the NeoForge client is checked by the parity gate and by hand: docs/DEV-RUN.md.)
+def clientOnly = (mod_environment == 'client')
+
+// The game-test glue lives in its own source set AND its own mod (${mod_id}_gametest). Two reasons:
+// the release jar packs only `main`, so nothing of it ships; and NeoForge builds one resource pack
+// per mod - a test fixture inside the main mod would SHADOW a real file at the same path instead of
+// merging with it, and a test could then stay green while checking nothing. Declared before the
+// neoForge block so `mods { ... sourceSet sourceSets.gametest }` can see it.
+if (!clientOnly) {
+    sourceSets {
+        gametest {
+            compileClasspath += sourceSets.main.compileClasspath + sourceSets.main.output
+            runtimeClasspath += sourceSets.main.runtimeClasspath + sourceSets.main.output
+        }
+    }
+}
+
+neoForge {
+    version = neoforge_version
+
+    mods {
+        "${mod_id}" {
+            sourceSet(sourceSets.main)
+        }
+        if (!clientOnly) {
+            "${mod_id}_gametest" {
+                sourceSet(sourceSets.gametest)
+            }
+        }
+    }
+
+    runs {
+        configureEach {
+            // Same names as the Fabric side, so the IDE list reads as one project.
+            ideName = "NeoForge ${it.name.capitalize()} (${project.path})"
+        }
+        // Run directories are per Minecraft line: a world opened on one line does not open on another.
+        client {
+            client()
+            gameDirectory = this.mkdir(this.file("runs/${minecraft_version}/client"))
+            programArguments.addAll('--username', 'Dev1')
+            // Dev runs load exactly what a player gets - not the test mod.
+            loadedMods = [mods."${mod_id}"]
+        }
+        // A second client with its own directory and name, for testing two players on one server.
+        client2 {
+            client()
+            gameDirectory = this.mkdir(this.file("runs/${minecraft_version}/client2"))
+            programArguments.addAll('--username', 'Dev2')
+            loadedMods = [mods."${mod_id}"]
+        }
+        server {
+            server()
+            gameDirectory = this.mkdir(this.file("runs/${minecraft_version}/server"))
+            loadedMods = [mods."${mod_id}"]
+        }
+        // Server game tests: a headless gameTestServer that exits with the number of failed required
+        // tests. Run: ./gradlew :neoforge:runGameTests (part of verifyAll, not of build). A client-only mod has none.
+        if (!clientOnly) {
+            gameTests {
+                type = 'gameTestServer'
+                gameDirectory = this.mkdir(this.file("runs/${minecraft_version}/gameTests"))
+                systemProperty('neoforge.enabledGameTestNamespaces', "${mod_id}_gametest")
+                // -PgametestRepeat=N is the stress run: every roster test must pass N times in a row.
+                def gametestRepeat = providers.gradleProperty('gametestRepeat').orNull
+                if (gametestRepeat != null) {
+                    systemProperty("${mod_id}.gametest.repeat", gametestRepeat)
+                }
+                loadedMods = [mods."${mod_id}", mods."${mod_id}_gametest"]
+            }
+        }
+    }
+}
+
+if (!clientOnly) {
+    // Same reason as on Fabric: the game-test world is disposable, so it is wiped before each run and
+    // the world of a failed run stays until the next one. The gameTestServer run type puts its world one
+    // level below the game directory, under gametestserver/.
+    def cleanNeoForgeGameTestWorld = tasks.register('cleanNeoForgeGameTestWorld', Delete) {
+        group = 'build'
+        description = 'Delete the leftover NeoForge game-test world before the next run.'
+        delete(project.layout.projectDirectory.dir("runs/${minecraft_version}/gameTests/gametestserver/gametestworld"))
+    }
+
+    // Matched by name: ModDevGradle creates the run tasks from the `runs` block after this file is read.
+    tasks.matching { it.name == 'runGameTests' }.configureEach {
+        dependsOn(cleanNeoForgeGameTestWorld)
+    }
+
+    // Compile the shared scenario bodies (common-mc/src/gametest/java) into the gametest source set.
+    configurations {
+        commonGametestJava {
+            canBeResolved = true
+            canBeConsumed = false
+        }
+    }
+
+    dependencies {
+        commonGametestJava(project(path: ':common-mc', configuration: 'commonGametestJava'))
+    }
+
+    tasks.named('compileGametestJava', JavaCompile) {
+        dependsOn(configurations.commonGametestJava)
+        source(configurations.commonGametestJava)
+    }
+}
+
+// The mcgradleconventions loader attribute - see fabric/build.gradle.
+def loaderAttribute = Attribute.of('io.github.mcgradleconventions.loader', String)
+['apiElements', 'runtimeElements', 'sourcesElements', 'javadocElements'].each { variant ->
+    configurations.findByName(variant)?.attributes {
+        attribute(loaderAttribute, 'neoforge')
+    }
+}
+sourceSets.configureEach {
+    [it.compileClasspathConfigurationName, it.runtimeClasspathConfigurationName, it.getTaskName(null, 'jarJar')].each { variant ->
+        configurations.findByName(variant)?.attributes {
+            attribute(loaderAttribute, 'neoforge')
+        }
+    }
+}

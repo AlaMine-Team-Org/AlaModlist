@@ -1,0 +1,46 @@
+# =============================================================================
+# Build-time library and plugin versions.
+#
+# What lives here: versions used only to resolve a dependency or a plugin.
+# What stays in gradle.properties: anything the mod metadata needs, because processResources
+# expands those into fabric.mod.json / neoforge.mods.toml and cannot read this catalog.
+#
+# No SNAPSHOT and no dynamic ('1.+') versions, ever: a build must mean the same thing tomorrow.
+# =============================================================================
+
+[versions]
+# Build plugins. Loom 1.17.x needs Gradle >= 9.5.0; Loom 1.18 will need Gradle >= 9.7.
+fabric-loom = "1.17.21"
+neoforge-moddev = "2.0.147"
+
+# Mixin toolchain, compile-only in :common-mc: both loaders bundle Fabric Mixin and MixinExtras
+# and apply mixins at runtime. Pinned to what NeoForge 26.3 bundles (Fabric Loader 0.19.5 ships a
+# newer patch of both), so the shared code never uses an API one of the loaders lacks.
+sponge-mixin = "0.17.3+mixin.0.8.7"
+mixinextras = "0.5.4"
+
+# Bundled by Minecraft 26.3 - pinned to the same versions so the unit tests, which run without
+# the game, cannot disagree with what ships at runtime.
+gson = "2.14.0"
+slf4j = "2.0.17"
+
+# Tests. JUnit stays on 5.x: both loaders' test harnesses are built on JUnit 5.
+junit = "5.14.4"
+# Architecture rules as an executable gate: reads the bytecode of :common-mc, not its text.
+archunit = "1.4.1"
+
+# Mod Menu (the config screen button in Fabric) is not here: its release is per Minecraft line, so it is
+# modmenu_version in gradle/mc/<line>.properties and fabric/build.gradle uses it from Modrinth's maven.
+
+[libraries]
+gson = { module = "com.google.code.gson:gson", version.ref = "gson" }
+slf4j-api = { module = "org.slf4j:slf4j-api", version.ref = "slf4j" }
+slf4j-nop = { module = "org.slf4j:slf4j-nop", version.ref = "slf4j" }
+junit-bom = { module = "org.junit:junit-bom", version.ref = "junit" }
+archunit-junit5 = { module = "com.tngtech.archunit:archunit-junit5", version.ref = "archunit" }
+sponge-mixin = { module = "net.fabricmc:sponge-mixin", version.ref = "sponge-mixin" }
+mixinextras-common = { module = "io.github.llamalad7:mixinextras-common", version.ref = "mixinextras" }
+
+[plugins]
+fabric-loom = { id = "net.fabricmc.fabric-loom", version.ref = "fabric-loom" }
+neoforge-moddev = { id = "net.neoforged.moddev", version.ref = "neoforge-moddev" }

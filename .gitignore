@@ -1,0 +1,26 @@
+# This repository only ever receives source files. Everything below is created
+# by building or running the mod in a working copy, and none of it may be
+# committed: a first publication once carried a few hundred files of compiled
+# classes because nothing ignored them yet.
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+
+# Development runs: worlds, logs and configs.
+run/
+runs/
+
+# Release staging in CI.
+dist/
+
+# Editors and operating systems.
+.idea/
+*.iml
+.vscode/
+.settings/
+.classpath
+.project
+bin/
+out/
+.DS_Store
+Thumbs.db

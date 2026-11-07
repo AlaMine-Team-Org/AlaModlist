@@ -1,0 +1,11 @@
+HTTP/1.1 201 Created
+X-Powered-By: PHP/8.3.11
+Content-Type: application/json
+X-RateLimit-Limit: 10
+X-RateLimit-Remaining: 8
+X-Frame-Options: SAMEORIGIN
+X-Content-Type-Options: nosniff
+Referrer-Policy: strict-origin-when-cross-origin
+Vary: Origin
+
+{"success":true,"id":"fsYRUuz9eGhW","url":"http:\/\/127.0.0.1:8061\/ru\/modlists\/fsYRUuz9eGhW","delete_token":"4Znixpikc4H0m7taCeAycVL2n8UVU7bKax5mcXAt2GIGgzCM4cXqQgQjJB9OUo6B","counts":{"mods":1,"libraries":1,"builtin":1,"resource_packs":1,"shader_packs":0,"data_packs":0,"plugins":1,"matched":null},"truncated":false,"expires":"2027-02-05T06:28:52+02:00"}

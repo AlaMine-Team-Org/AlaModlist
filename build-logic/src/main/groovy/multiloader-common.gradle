@@ -1,0 +1,199 @@
+plugins {
+    id 'java-library'
+}
+
+// A property from gradle.properties, or a build failure that names it. Reading a missing key with
+// `project.property` throws a message that does not say which file to fix.
+def requiredProperty = { String key ->
+    Object value = project.findProperty(key)
+    if (value == null || value.toString().isBlank()) {
+        throw new GradleException("gradle.properties has no value for '${key}'. Every value the mod "
+                + 'metadata needs is declared there - see the comments in that file.')
+    }
+    value.toString()
+}
+
+base {
+    archivesName = "${requiredProperty('mod_id')}-${project.name}-${requiredProperty('minecraft_version')}"
+}
+
+// -------------------------------------------------------------------------------------------------
+// The store description comes from its own file, in UTF-8.
+//
+// It cannot live in gradle.properties, which Gradle reads as ISO-8859-1: an em dash written there
+// reaches the jar double-encoded, and the first place anybody sees it is a store page. Line breaks
+// fold into spaces so the file can be wrapped for reading while the value stays one line - the
+// metadata is JSON and TOML, and a raw newline is invalid in one of them.
+// -------------------------------------------------------------------------------------------------
+File descriptionFile = rootProject.file('mod_description.txt')
+if (!descriptionFile.isFile()) {
+    throw new GradleException("${descriptionFile} is missing. It carries the store description "
+            + 'that both fabric.mod.json and neoforge.mods.toml are built from.')
+}
+description = descriptionFile.getText('UTF-8').replaceAll(/\s+/, ' ').trim()
+if (description.isEmpty()) {
+    throw new GradleException("${descriptionFile} is empty, and an empty description reaches "
+            + 'both store pages exactly as written.')
+}
+// The TOML template carries the description between ''' delimiters, which escape nothing: three
+// quotes in the text would end the literal early and produce a file the loader cannot parse.
+if (description.contains("'''")) {
+    throw new GradleException("${descriptionFile} contains ''' , which ends the TOML literal "
+            + 'that carries it into neoforge.mods.toml.')
+}
+
+// One property decides where the mod runs; everything else is derived from it, never restated.
+String modEnvironment = requiredProperty('mod_environment')
+Map<String, String> neoForgeSides = ['*': 'BOTH', 'client': 'CLIENT']
+if (!neoForgeSides.containsKey(modEnvironment)) {
+    throw new GradleException("mod_environment must be '*' (client and server) or 'client' "
+            + "(client-only mod), not '${modEnvironment}'.")
+}
+
+repositories {
+    mavenCentral()
+    // Loom and ModDevGradle add their own repositories to the modules that apply them; these are
+    // for the ordinary libraries every module shares.
+    maven {
+        name = 'NeoForged'
+        url = uri('https://maven.neoforged.net/releases')
+    }
+    exclusiveContent {
+        forRepository {
+            maven {
+                name = 'Fabric'
+                url = uri('https://maven.fabricmc.net/')
+            }
+        }
+        filter {
+            includeGroupAndSubgroups('net.fabricmc')
+        }
+    }
+}
+
+java {
+    toolchain.languageVersion = JavaLanguageVersion.of(requiredProperty('java_version'))
+}
+
+// Name the deprecated symbols instead of counting them: Mojang and the loaders deprecate a symbol a
+// release or two before removing it, so this is free notice of the next migration.
+//
+// Flags go through compilerArgs, not `options.deprecation = true`: that property is not an input of
+// the build cache key, so a compilation restored from the cache arrived without its warnings.
+// -Xmaxwarns: javac stops listing after 100 warnings and the count after that is misleading.
+// Deliberately not -Werror - vanilla deprecates on Mojang's schedule, not ours.
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.compilerArgs.addAll(['-Xlint:deprecation', '-Xmaxwarns', '2000'])
+}
+
+tasks.withType(Jar).configureEach {
+    from(rootProject.file('LICENSE')) {
+        rename { "${it}_${requiredProperty('mod_id')}" }
+    }
+    // Only when the file exists: `from` on a missing file silently copies nothing, which is how a
+    // NOTICE line once "shipped" a file that was never in the jar.
+    if (rootProject.file('NOTICE').isFile()) {
+        from(rootProject.file('NOTICE')) {
+            rename { "${it}_${requiredProperty('mod_id')}" }
+        }
+    }
+}
+
+jar {
+    manifest {
+        attributes([
+                'Specification-Title'   : requiredProperty('mod_name'),
+                'Specification-Vendor'  : requiredProperty('mod_author'),
+                'Specification-Version' : project.jar.archiveVersion,
+                'Implementation-Title'  : project.name,
+                'Implementation-Version': project.jar.archiveVersion,
+                'Implementation-Vendor' : requiredProperty('mod_author'),
+                'Built-On-Minecraft'    : requiredProperty('minecraft_version')
+        ])
+    }
+}
+
+// -------------------------------------------------------------------------------------------------
+// Build stamp: short commit hash + commit time, expanded into <mod_id>.build.json so the mod can say
+// exactly which build it is (`/<mod_id> version`).
+//
+// Both values come from the COMMIT, never from the clock. A wall-clock value would make
+// processResources out of date every minute and drag the whole jar chain with it, and it would make
+// two builds of the same commit differ - nobody could rebuild a release and compare its SHA with the
+// published file. %cI is the committer date in strict ISO 8601 with the commit's own offset, so the
+// value does not depend on the machine's time zone.
+// -------------------------------------------------------------------------------------------------
+String gitHash = 'dev'
+String commitTime = 'dev'
+try {
+    def git = providers.exec {
+        commandLine 'git', 'log', '-1', '--format=%h%n%cI'
+        ignoreExitValue = true
+    }
+    if (git.result.get().exitValue == 0) {
+        List<String> stamp = git.standardOutput.asText.get().trim().readLines()
+        if (stamp.size() >= 1 && !stamp[0].trim().isEmpty()) {
+            gitHash = stamp[0].trim()
+        }
+        if (stamp.size() >= 2 && !stamp[1].trim().isEmpty()) {
+            commitTime = stamp[1].trim()
+        }
+    }
+} catch (Exception e) {
+    // No git on PATH, a source archive without .git, or a repository with no commits yet. 'dev' is
+    // the documented fallback BuildInfo understands; say so, because a release build stamped 'dev'
+    // cannot be traced back to a commit.
+    logger.warn("[{}] could not read the git stamp ({}: {}) - this build will be marked 'dev'.",
+            requiredProperty('mod_id'), e.getClass().getSimpleName(), e.message)
+}
+
+processResources {
+    // Read and write resources as UTF-8 rather than as whatever the Gradle daemon's JVM defaults to.
+    // Without it the encoding of the expanded metadata depends on who ran the build.
+    filteringCharset = 'UTF-8'
+
+    var expandProps = [
+            'version'                  : project.version,
+            'group'                    : project.group,
+            'githash'                  : gitHash,
+            'committime'               : commitTime,
+            'java_version'             : requiredProperty('java_version'),
+            'mod_id'                   : requiredProperty('mod_id'),
+            'mod_name'                 : requiredProperty('mod_name'),
+            'mod_author'               : requiredProperty('mod_author'),
+            'license'                  : requiredProperty('license'),
+            'description'              : project.description,
+            'mod_environment'          : modEnvironment,
+            'neoforge_side'            : neoForgeSides[modEnvironment],
+            'mod_homepage_url'         : requiredProperty('mod_homepage_url'),
+            'mod_sources_url'          : requiredProperty('mod_sources_url'),
+            'mod_issues_url'           : requiredProperty('mod_issues_url'),
+            'minecraft_version'        : requiredProperty('minecraft_version'),
+            'minecraft_version_range'  : requiredProperty('minecraft_version_range'),
+            'fabric_loader_min_version': requiredProperty('fabric_loader_min_version'),
+            'fabric_api_min_version'   : requiredProperty('fabric_api_min_version'),
+            'neoforge_min_version'     : requiredProperty('neoforge_min_version')
+    ]
+
+    // Escaped as JSON for the JSON targets, because that is what they are: fabric.mod.json drops
+    // each value between two quotes, so a quote or a backslash in the description would produce a
+    // file Fabric refuses to load. JsonOutput does it correctly; a hand-rolled escape did not.
+    var escapeJson = { String value ->
+        String quoted = groovy.json.JsonOutput.toJson(value)
+        quoted.substring(1, quoted.length() - 1)
+    }
+    var jsonExpandProps = expandProps.collectEntries { key, value ->
+        [(key): value instanceof String || value instanceof GString ? escapeJson(value.toString()) : value]
+    }
+
+    // Only the files that carry placeholders: `expand` interprets every '$' in a matched file.
+    filesMatching(['fabric.mod.json', "${requiredProperty('mod_id')}.build.json".toString()]) {
+        expand jsonExpandProps
+    }
+    filesMatching(['META-INF/neoforge.mods.toml']) {
+        expand expandProps
+    }
+
+    inputs.properties(expandProps)
+}

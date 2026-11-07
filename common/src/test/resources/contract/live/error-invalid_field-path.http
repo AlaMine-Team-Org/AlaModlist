@@ -1,0 +1,11 @@
+HTTP/1.1 400 Bad Request
+X-Powered-By: PHP/8.3.11
+Content-Type: application/json
+X-RateLimit-Limit: 10
+X-RateLimit-Remaining: 6
+X-Frame-Options: SAMEORIGIN
+X-Content-Type-Options: nosniff
+Referrer-Policy: strict-origin-when-cross-origin
+Vary: Origin
+
+{"success":false,"error":"Field 'mods[0].file_name' must be a bare file name without a directory.","error_code":"invalid_field","field":"mods[0].file_name"}

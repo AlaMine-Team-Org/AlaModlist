@@ -1,0 +1,17 @@
+# Keeps the pinned actions current. Every action in the workflows is pinned to
+# a full commit SHA with its version in a comment; Dependabot proposes the next
+# SHA and version together.
+#
+# The workflows of this repository are maintained from a private source and
+# replaced on every release, so apply an update there - a pull request merged
+# only here would be overwritten by the next sync.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns:
+          - '*'

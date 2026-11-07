@@ -1,0 +1,18 @@
+plugins {
+    // https://maven.fabricmc.net/net/fabricmc/fabric-loom/maven-metadata.xml
+    alias(libs.plugins.fabric.loom) apply false
+    // https://projects.neoforged.net/neoforged/moddevgradle
+    alias(libs.plugins.neoforge.moddev) apply false
+}
+
+// `version` and `group` are not set here on purpose: Gradle applies matching keys from
+// gradle.properties to every project, so all modules already carry them, and setting them again
+// would be a second source of truth. The description comes from mod_description.txt (see
+// build-logic), because gradle.properties is read as ISO-8859-1.
+
+// The repository gates (Python validators under tools/), `checkAll`, `verifyAll` and
+// `installGitHooks` live in gradle/checks.gradle. It is developer tooling that never reaches the
+// public repository, so the public build must work without it - hence applied only when present.
+if (file('gradle/checks.gradle').exists()) {
+    apply from: 'gradle/checks.gradle'
+}
