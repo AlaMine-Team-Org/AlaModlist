@@ -5,6 +5,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-08
+
 ### Added
 
 - The first version of Ala Modlist: share what you have installed as one short link.
@@ -21,3 +23,4 @@ All notable changes to this project are documented here. The format follows
 - Settings for the messages above the hotbar, the CurseForge fingerprint and the site address, with a config screen
   through Mod Menu on Fabric and the mod list screen on NeoForge.
 - Available in English, Russian and Ukrainian, for Minecraft 26.2 and 26.3 on Fabric and NeoForge.
+- Resource packs, shaders and server plugins are planned for a later version.
